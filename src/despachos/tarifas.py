@@ -81,3 +81,31 @@ def desglose(envio: Envio) -> dict[str, float]:
         "factor_zona": factor,
         "total": calcular(envio),
     }
+
+# Funcion nueva
+def estimar_dias_entrega(envio: Envio) -> int:
+    """Estima los dias habiles de entrega segun zona, peso y urgencia."""
+    if envio.zona not in ZONAS:
+        raise ZonaDesconocida(f"zona no reconocida: {envio.zona}")
+
+    if envio.zona == "lima_metropolitana":
+        dias = 1
+    elif envio.zona in ("costa_norte", "costa_sur"):
+        dias = 3
+    elif envio.zona in ZONAS_ALEJADAS:
+        dias = 7
+    else:
+        dias = 5
+
+    if envio.peso_kg > 50:
+        dias += 3
+    elif envio.peso_kg > 20:
+        dias += 1
+
+    if envio.urgente:
+        dias = max(1, dias // 2)
+
+    if envio.valor_declarado >= UMBRAL_ENVIO_GRATIS and not envio.urgente:
+        dias += 1
+
+    return dias
