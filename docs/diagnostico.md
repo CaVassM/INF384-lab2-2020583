@@ -1,27 +1,86 @@
-# 1.1 -> Fallas del Pipeline
+# Diagnóstico del pipeline
 
-- Como primer error, es el hecho de que los jobs se encuentren independientes.
-  Es decir, el job de publicar no depende del job validar; por tanto, cualquier cambio u commit
-  que se envíe y no pase las pruebas, pasarán al 2do step sin garantizar su calidad.
-- Como segundo error, se muestra que descarga nuevamente el repositorio, obteniendo así en su totalidad 
-  como dos repositorios redundantes, los cuales no se puede garantizar su reproducibilidad al haber sido ejecutados en diferentes
-  tiempos, pues puede que las librerías hayan cambiado con el tiempos
-- Como tercer error, se realiza instalación de librerías por medio de un requirements en ambos ambientes, mas
-  no se utiliza el lock que se encuentra implementado en el repositorio. Grave puesto que el lock sí garantiza
-  reproducibilidad entre las versiones.
-- Como cuarto error, no se cachea las librerías, pues no se encuentra instanciado el valor cache en ninguno de los dos 
-  jobs.
+## Parte 1 — Diagnóstico
 
-  
-# 1.2 -> Defectos que explican la duración
-- Considero lo que genera demoras son las instalaciones de las librerías. Si bien se reducen (ej_1 con un tiempo de 46 seg,
-  mientras que los restantes de 33 seg, esto debido al caché), el indicar a la máquina en verificar e instalar nuevamente 
-  los paquetes requeridos para el proyecto, actualizar no solo el gestor sino también estas librerías, son las que generan
-  retardo. Con lock podría reducirse pues sería una versión fija e inmutable al reproducir el pipeline más veces.
+### 1.1 Los cuatro defectos
 
-# 1.3 -> Vinculo con su caso  
+**Defecto 1 — Jobs sin dependencia entre sí**
+- El job `publicar` no declara `needs: validar`, por lo que ambos jobs se
+  ejecutan en paralelo, por lo que no existe quality gate. Un commit que falla las pruebas o el
+  análisis de calidad genera igualmente un artefacto publicado, porque `publicar` no espera
+  el resultado de `validar` ni depende de él.
+
+**Defecto 2 — El artefacto publicado no es el que fue validado**
+
+- `publicar` ejecuta `python -m build` en su propia máquina, construyendo el
+  paquete desde cero en lugar de reutilizar lo que `validar` ya verificó. No hay garantía de que sean idénticos
+
+**Defecto 3 — Instalación desde `requirements.txt` en lugar del archivo de bloqueo**
+
+- Se instala con `pip install -r requirements.txt`, pese a que el repositorio
+  incluye `requirements.lock` con versiones fijas. Por tanto, se pierde reproducibilidad.
+
+**Defecto 4 — Sin caché de dependencias**
+
+- `actions/setup-python` se usa sin el parámetro `cache`.
+- Cada ejecución levanta una máquina limpia y descarga todas las
+  dependencias desde el registro público, en los dos jobs. 
+
+### 1.2 El defecto que explica la duración
+
+El defecto 4 referido con la ausencia de caché es el que explica el tiempo registrado en
+`docs/linea-base.md`.
+
+Las tres ejecuciones de línea base promediaron entre 40-38seg, con la instalación de dependencias
+concentrando la mayor parte de ese tiempo, pues cada job descarga los paquetes desde el registro
+público porque la máquina virtual se destruye al terminar y el caché local de pip
+(`~/.cache/pip`) no sobrevive entre ejecuciones. 
+
+### 1.3 El vínculo con el caso transversal
+Ataca la etapa de despliegue. En el caso de la sesión uno, una problemática era una persona que conocía del despliegue; sin embargo, el resto del equipo no lo ejecutaba. En este caso, se orienta en el mismo lugar, con la diferencia que este se remonta más a un apartado técnico que de una dependencia humana.
 
 
-# 1.4 -> Metrica DORA
+### 1.4 La métrica DORA
 
-# 1.5 -> Proxy
+De las cuatro métricas DORA, las dos alcanzables son *lead time de cambios* y *tasa de fallos de cambio*.
+
+Elegimos **lead time de cambios**. La corrección del defecto 4 reduce directamente el tiempo
+que transcurre entre el commit y la retroalimentación automática, que es el tramo del lead
+time que el pipeline controla. Una retroalimentación más rápida reduce además el costo de
+corrección, porque el desarrollador conserva el contexto del cambio.
+
+### 1.5 El proxy
+
+Este sería la duración total del workflow, promedio de tres ejecuciones consecutivas
+disparadas manualmente sin modificar archivos. se busca una meta de aproximadamente un 30% de reducción en cuanto al tiempo.
+
+---
+
+## Parte 4 — Resultados
+
+### 4.1 Medición posterior
+- 1: 1min, 12seg
+- 2: 1 min, 30seg
+
+Cabe aclarar, que en la anterior etapa, esto se debía puesto a que las etapas se realizaban de manera paralela. En este caso, es secuencial, y el punto de publicar artefacto es mucho más agul (13-14seg aprox) a comparación de las anetriores corridas con un aproximado de 37seg.
+
+### 4.2 Justificación de la versión
+
+**Versión declarada: [1.2.1]**
+
+Se sube un número adicional al valor de patch, pues se ha corregido el .yaml del proyecto. No impacta directamente al cliente por lo que no es necesario enfocarse en el número alto y bajo.
+
+### 4.3 Lo que no se resolvió
+
+El artefacto publicado se construye por segunda vez, en una máquina distinta
+de la que ejecutó las validaciones.**
+
+Aunque se corrigió la dependencia entre jobs con `needs: validar`, el job `publicar` sigue ejecutando `python -m build` en su propio entorno. Lo que se publica es un binario reconstruido, no el mismo que fue sometido a pruebas y análisis de calidad.
+
+Para resolverlo:
+
+1. Que el job `validar` construya el paquete y lo suba con `actions/upload-artifact`.
+2. Que el job `publicar` lo recupere en lugar de reconstruirlo.
+
+De ese modo el artefacto validado y el artefacto publicado serían el mismo archivo, con una
+única construcción por corrida.
